@@ -456,6 +456,8 @@ class Decoder(srd.Decoder):
 
     def handle_addr(self):
         """Process slave address."""
+        if len(self.bytes) == 0:
+                return
         # Registers row
         self.addr = self.bytes[0]
         ann_idx = addr_annots[self.addr]
@@ -465,6 +467,8 @@ class Decoder(srd.Decoder):
 
     def handle_reg(self):
         """Create name and call corresponding slave register handler."""
+        if len(self.bytes) == 0:
+                return
         self.reg = self.bytes[0]
         if self.addr == Address.GC:
             ann_idx = reg_annots_gc[self.reg]
@@ -477,6 +481,8 @@ class Decoder(srd.Decoder):
 
     def handle_data(self):
         """Create name and call corresponding data register handler."""
+        if len(self.bytes) == 0:
+                return
         fn = getattr(self, "handle_datareg_{:#04x}".format(self.reg))
         fn()
         self.clear_data()
