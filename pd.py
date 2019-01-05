@@ -37,7 +37,7 @@ class Address:
       physically connected to.
     """
 
-    (GC, GND, VCC, SDA, SCL) = (GeneralCall.ADDRESS, 0x48, 0x49, 0x4a, 0x4b)
+    (GND, VCC, SDA, SCL) = (0x48, 0x49, 0x4a, 0x4b)
 
 
 class Register:
@@ -71,6 +71,12 @@ class CommonBits:
     """Enumeration of common bits."""
 
     (RESERVED,) = (0xff,)
+
+
+class TempBits:
+    """Enumeration of specific temperature register bits."""
+
+    (EM,) = (0,)
 
 
 class Params:
@@ -114,7 +120,7 @@ class AnnStrings:
 # Parameters mapping
 ###############################################################################
 addr_annots = {  # Convert value to annotation index
-    Address.GC: AnnAddrs.GC,
+    GeneralCall.ADDRESS: AnnAddrs.GC,
     Address.GND: AnnAddrs.GND,
     Address.VCC: AnnAddrs.VCC,
     Address.SDA: AnnAddrs.SDA,
@@ -294,9 +300,9 @@ class Decoder(srd.Decoder):
         self.bytes = []     # List of recent processed bytes
         self.state = "IDLE"
         # Specific parameters for a device
-        self.addr = 0x00    # Slave address
-        self.reg = 0x00     # Processed slave register (default pointer one)
-        self.em = True      # Extended mode
+        self.addr = Address.GND     # Slave address (default ADD0 grounded)
+        self.reg = Register.TEMP    # Processed slave register (default temp)
+        self.em = False              # Extended mode (default Normal)
 
     def start(self):
         """Actions before the beginning of the decoding."""
@@ -376,7 +382,7 @@ class Decoder(srd.Decoder):
         - Output is an annotation block from the start sample of the first bit
           to the end sample of the last bit.
         """
-        self.put(self.regbits[bit_start][1], self.regbits[bit_stop][2],
+        self.put(self.bits[bit_start][1], self.bits[bit_stop][2],
                  self.out_ann, data)
 
     def put_reserved(self, bit_reserved):
@@ -386,7 +392,7 @@ class Decoder(srd.Decoder):
           of a reserved bit.
         """
         annots = self.compose_annot(bits[AnnBits.RESERVED])
-        self.put(self.regbits[bit_reserved][1], self.regbits[bit_reserved][2],
+        self.put(self.bits[bit_reserved][1], self.bits[bit_reserved][2],
                  self.out_ann, [AnnBits.RESERVED, annots])
 
     def check_addr(self, addr_slave, check_gencall=False):
@@ -396,7 +402,7 @@ class Decoder(srd.Decoder):
             Address.VCC,
             Address.SDA,
             Address.SCL,
-        ) or not check_gencall or addr_slave == Address.GC:
+        ) or not check_gencall or addr_slave == GeneralCall.ADDRESS:
             return True
         self.put(self.ssb, self.es, self.out_ann,
                  [AnnStrings.WARN,
@@ -420,7 +426,7 @@ class Decoder(srd.Decoder):
 
         """
         # Extended mode (13-bit resolution)
-        if self.em:
+        if self.em or (rawdata & (1 << TempBits.EM)):
             rawdata >>= 3
             if rawdata > 0x0fff:
                 rawdata |= 0xe000  # 2s complement
@@ -452,12 +458,12 @@ class Decoder(srd.Decoder):
         """Clear data cache."""
         self.ssd = self.esd = 0
         self.bytes = []
-        self.regbits = []
+        self.bits = []
 
     def handle_addr(self):
         """Process slave address."""
         if len(self.bytes) == 0:
-                return
+            return
         # Registers row
         self.addr = self.bytes[0]
         ann_idx = addr_annots[self.addr]
@@ -468,9 +474,9 @@ class Decoder(srd.Decoder):
     def handle_reg(self):
         """Create name and call corresponding slave register handler."""
         if len(self.bytes) == 0:
-                return
+            return
         self.reg = self.bytes[0]
-        if self.addr == Address.GC:
+        if self.addr == GeneralCall.ADDRESS:
             ann_idx = reg_annots_gc[self.reg]
         else:
             ann_idx = reg_annots[self.reg]
@@ -481,14 +487,12 @@ class Decoder(srd.Decoder):
 
     def handle_data(self):
         """Create name and call corresponding data register handler."""
-        if len(self.bytes) == 0:
-                return
         fn = getattr(self, "handle_datareg_{:#04x}".format(self.reg))
         fn()
         self.clear_data()
 
     def handle_datareg_0x06(self):
-        """Process general rest register."""
+        """Process general reset register."""
         # Info row
         annots = self.compose_annot(strings[AnnStrings.GRST])
         self.put(self.ssb, self.es, self.out_ann, [AnnStrings.GRST, annots])
@@ -535,14 +539,14 @@ class Decoder(srd.Decoder):
         self.put_data(ConfigBits.CR1, ConfigBits.CR0, [AnnBits.CR0, annots])
         # Bits row - AL bit - alert
         al = 1 if (regword & (1 << ConfigBits.AL)) else 0
-        al_l = "Off" if (al ^ pol) else "Active"
+        al_l = ("in" if (al ^ pol) else "") + "active"
         al_s = al_l[0].upper()
         annots = self.compose_annot(bits[AnnBits.AL], [al, al_l, al_s])
         self.put_data(ConfigBits.AL, ConfigBits.AL, [AnnBits.AL, annots])
         # Bits row - EM bit - extended mode
         em = 1 if (regword & (1 << ConfigBits.EM)) else 0
         self.em = bool(em)
-        em_l = ("en" if (sd) else "dis") + "abled"
+        em_l = ("en" if (em) else "dis") + "abled"
         em_s = em_l[0].upper()
         annots = self.compose_annot(bits[AnnBits.EM], [em, em_l, em_s])
         self.put_data(ConfigBits.EM, ConfigBits.EM, [AnnBits.EM, annots])
@@ -554,7 +558,10 @@ class Decoder(srd.Decoder):
                                     "{:#06x}".format(regword))
         self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.DATA, annots])
         # Info row
-        ann_idx = prm_annots[regword]
+        if regword == Params.POWERUP:
+            ann_idx = prm_annots[regword]
+        else:
+            ann_idx = prm_annots[Params.CUSTOM]
         annots = self.compose_annot(strings[AnnStrings.CONF], strings[ann_idx])
         self.put(self.ssb, self.es, self.out_ann, [AnnStrings.CONF, annots])
 
@@ -562,6 +569,13 @@ class Decoder(srd.Decoder):
         """Process temperature register."""
         regword = (self.bytes[1] << 8) + self.bytes[0]
         temp, unit = self.calculate_temperature(regword)
+        # Bits row - EM bit - extended mode
+        em = 1 if (regword & (1 << TempBits.EM)) else 0
+        self.em = bool(em)
+        em_l = ("en" if (em) else "dis") + "abled"
+        em_s = em_l[0].upper()
+        annots = self.compose_annot(bits[AnnBits.EM], [em, em_l, em_s])
+        self.put_data(TempBits.EM, TempBits.EM, [AnnBits.EM, annots])
         # Registers row
         annots = self.compose_annot(registers[AnnRegs.DATA],
                                     "{:#06x}".format(regword))
@@ -611,7 +625,7 @@ class Decoder(srd.Decoder):
               (MSB) as it is at representing numbers in computers, although I2C
               bus transmits data in oposite order with MSB first.
             """
-            self.bits = databyte
+            self.bits = databyte + self.bits
             return
 
         # State machine
