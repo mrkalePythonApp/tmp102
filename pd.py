@@ -112,8 +112,9 @@ class AnnStrings:
     """Enumeration of annotations for formatted strings."""
 
     (
-        WARN, GRST, CUSTOM, PWRUP, CONF, TEMP, TLOW, THIGH,
-    ) = range(AnnBits.OS + 1, (AnnBits.OS + 1) + 8)
+        WARN, GRST, CHECK, CUSTOM, PWRUP,
+        CONF, TEMP, TLOW, THIGH,
+    ) = range(AnnBits.OS + 1, (AnnBits.OS + 1) + 9)
 
 
 ###############################################################################
@@ -211,6 +212,8 @@ bits = {
 strings = {
     AnnStrings.WARN: ["Warnings", "Warn", "W"],
     AnnStrings.GRST: ["General reset", "GenReset", "GRST", "Rst", "R"],
+    AnnStrings.CHECK: ["Slave presence check", "Slave check", "Check",
+                       "Chk", "C"],
     AnnStrings.CUSTOM: ["Custom", "Cst", "C"],
     AnnStrings.PWRUP: ["Power-up reset", "PwrReset", "Pwr", "P"],
     AnnStrings.CONF: ["Configuration", "Conf", "Cfg", "C"],
@@ -485,6 +488,12 @@ class Decoder(srd.Decoder):
         self.put(self.ssd, self.esd, self.out_ann, [ann_idx, annots])
         self.clear_data()
 
+    def handle_nodata(self):
+        """Process transmission without any data."""
+        # Info row
+        annots = self.compose_annot(strings[AnnStrings.CHECK])
+        self.put(self.ssb, self.es, self.out_ann, [AnnStrings.CHECK, annots])
+
     def handle_data(self):
         """Create name and call corresponding data register handler."""
         fn = getattr(self, "handle_datareg_{:#04x}".format(self.reg))
@@ -662,6 +671,10 @@ class Decoder(srd.Decoder):
                 self.collect_data(databyte)
                 self.handle_reg()
                 self.state = "REGISTER DATA"
+            elif cmd == "STOP":
+                """Output end of transmission without any register and data."""
+                self.handle_nodata()
+                self.state = "IDLE"
 
         elif self.state == "REGISTER DATA":
             """Process writing or reading data for a slave register.
