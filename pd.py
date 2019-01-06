@@ -76,7 +76,7 @@ class CommonBits:
 class TempBits:
     """Enumeration of specific temperature register bits."""
 
-    (EM,) = (0,)
+    (EM, RESERVED) = (0, 1)
 
 
 class Params:
@@ -103,9 +103,9 @@ class AnnBits:
     """Enumeration of annotations for configuration bits."""
 
     (
-        RESERVED,
+        RESERVED, DATA,
         EM, AL, CR0, SD, TM, POL, F0, R0, OS
-    ) = range(AnnRegs.THIGH + 1, (AnnRegs.THIGH + 1) + 10)
+    ) = range(AnnRegs.THIGH + 1, (AnnRegs.THIGH + 1) + 11)
 
 
 class AnnStrings:
@@ -198,6 +198,7 @@ registers = {
 
 bits = {
     AnnBits.RESERVED: ["Reserved bit", "Reserved", "Rsvd", "R"],
+    AnnBits.DATA: ["Data bit", "Data", "D"],
     AnnBits.EM: ["Extended mode", "EM", "E"],
     AnnBits.AL: ["Alert", "AL", "A"],
     AnnBits.CR0: ["Conversion rate bits", "Conversion rate", "Rate", "R"],
@@ -388,10 +389,20 @@ class Decoder(srd.Decoder):
         self.put(self.bits[bit_start][1], self.bits[bit_stop][2],
                  self.out_ann, data)
 
-    def put_reserved(self, bit_reserved):
+    def put_bit_data(self, bit_reserved):
+        """Span output under general data bit.
+
+        - Output is an annotation block from the start to the end sample
+          of a data bit.
+        """
+        annots = self.compose_annot(bits[AnnBits.DATA])
+        self.put(self.bits[bit_reserved][1], self.bits[bit_reserved][2],
+                 self.out_ann, [AnnBits.DATA, annots])
+
+    def put_bit_reserve(self, bit_reserved):
         """Span output under reserved bit.
 
-        - Output is an annotation block from the start  to the end sample
+        - Output is an annotation block from the start to the end sample
           of a reserved bit.
         """
         annots = self.compose_annot(bits[AnnBits.RESERVED])
@@ -428,8 +439,10 @@ class Decoder(srd.Decoder):
             option.
 
         """
+        if rawdata & (1 << TempBits.EM):
+            self.em = True
         # Extended mode (13-bit resolution)
-        if self.em or (rawdata & (1 << TempBits.EM)):
+        if self.em:
             rawdata >>= 3
             if rawdata > 0x0fff:
                 rawdata |= 0xe000  # 2s complement
@@ -561,7 +574,7 @@ class Decoder(srd.Decoder):
         self.put_data(ConfigBits.EM, ConfigBits.EM, [AnnBits.EM, annots])
         # Bits row - reserved bits
         for i in range(ConfigBits.EM - 1, -1, -1):
-            self.put_reserved(i)
+            self.put_bit_reserve(i)
         # Registers row
         annots = self.compose_annot(registers[AnnRegs.DATA],
                                     "{:#06x}".format(regword))
@@ -579,12 +592,20 @@ class Decoder(srd.Decoder):
         regword = (self.bytes[1] << 8) + self.bytes[0]
         temp, unit = self.calculate_temperature(regword)
         # Bits row - EM bit - extended mode
-        em = 1 if (regword & (1 << TempBits.EM)) else 0
-        self.em = bool(em)
-        em_l = ("en" if (em) else "dis") + "abled"
+        em = 1 if (self.em) else 0
+        em_l = ("en" if (self.em) else "dis") + "abled"
         em_s = em_l[0].upper()
         annots = self.compose_annot(bits[AnnBits.EM], [em, em_l, em_s])
         self.put_data(TempBits.EM, TempBits.EM, [AnnBits.EM, annots])
+        # Bits row - reserved bits
+        res_bits = 2 if (self.em) else 3
+        for i in range(0, res_bits):
+            self.put_bit_reserve(i + TempBits.RESERVED)
+        # Bits row - data bits
+        data_bits = 8 * len(self.bytes) - 1 - res_bits
+        print(res_bits, data_bits)
+        for i in range(0, data_bits):
+            self.put_bit_data(i + TempBits.RESERVED + res_bits)
         # Registers row
         annots = self.compose_annot(registers[AnnRegs.DATA],
                                     "{:#06x}".format(regword))
