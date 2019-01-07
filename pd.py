@@ -112,9 +112,9 @@ class AnnStrings:
     """Enumeration of annotations for formatted strings."""
 
     (
-        WARN, GRST, CHECK, CUSTOM, PWRUP,
+        WARN, GRST, CHECK, WRITE, READ, CUSTOM, PWRUP,
         CONF, TEMP, TLOW, THIGH,
-    ) = range(AnnBits.OS + 1, (AnnBits.OS + 1) + 9)
+    ) = range(AnnBits.OS + 1, (AnnBits.OS + 1) + 11)
 
 
 ###############################################################################
@@ -213,6 +213,8 @@ bits = {
 strings = {
     AnnStrings.WARN: ["Warnings", "Warn", "W"],
     AnnStrings.GRST: ["General reset", "GenReset", "GRST", "Rst", "R"],
+    AnnStrings.WRITE: ["Write", "Wr", "W"],
+    AnnStrings.READ: ["Read", "Rd", "R"],
     AnnStrings.CHECK: ["Slave presence check", "Slave check", "Check",
                        "Chk", "C"],
     AnnStrings.CUSTOM: ["Custom", "Cst", "C"],
@@ -252,7 +254,7 @@ class Decoder(srd.Decoder):
         ("addr-sda", addresses[AnnAddrs.SDA][0]),
         ("addr-scl", addresses[AnnAddrs.SCL][0]),
         # Registers
-        ("reg-grst", registers[AnnRegs.RESET][0]),
+        ("reg-reset", registers[AnnRegs.RESET][0]),
         ("reg-data", registers[AnnRegs.DATA][0]),
         ("reg-conf", registers[AnnRegs.CONF][0]),
         ("reg-temp", registers[AnnRegs.TEMP][0]),
@@ -260,6 +262,7 @@ class Decoder(srd.Decoder):
         ("reg-thigh", registers[AnnRegs.THIGH][0]),
         # Common bits
         ("bit-reserved", bits[AnnBits.RESERVED][0]),
+        ("bit-data", bits[AnnBits.DATA][0]),
         # Configuration bits
         ("bit-em", bits[AnnBits.EM][0]),
         ("bit-al", bits[AnnBits.AL][0]),
@@ -273,6 +276,9 @@ class Decoder(srd.Decoder):
         # Strings
         ("warnings", strings[AnnStrings.WARN][0]),
         ("gen-reset", strings[AnnStrings.GRST][0]),
+        ("write", strings[AnnStrings.WRITE][0]),
+        ("read", strings[AnnStrings.READ][0]),
+        ("check", strings[AnnStrings.CHECK][0]),
         ("custom", strings[AnnStrings.CUSTOM][0]),
         ("power-up", strings[AnnStrings.PWRUP][0]),
         ("conf", strings[AnnStrings.CONF][0]),
@@ -302,30 +308,36 @@ class Decoder(srd.Decoder):
         self.esd = 0        # End sample of an annotation data block
         self.bits = []      # List of recent processed byte bits
         self.bytes = []     # List of recent processed bytes
+        self.write = True   # Flag about recent write action (default write)
         self.state = "IDLE"
         # Specific parameters for a device
         self.addr = Address.GND     # Slave address (default ADD0 grounded)
         self.reg = Register.TEMP    # Processed slave register (default temp)
-        self.em = False              # Extended mode (default Normal)
+        self.em = False             # Flag about extended mode (default Normal)
 
     def start(self):
         """Actions before the beginning of the decoding."""
         self.out_ann = self.register(srd.OUTPUT_ANN)
 
-    def compose_annot(self, ann_list, ann_value=None, ann_unit=None):
+    def compose_annot(self, ann_label, ann_value=None, ann_unit=None,
+                      ann_action=None):
         """Compose list of annotations enriched with value and unit.
 
         Arguments
         ---------
-        ann_list : list
-            List of annotations for enriching with values and units.
+        ann_label : list
+            List of annotation label for enriching with values and units and
+            prefixed with actions.
             *The argument is mandatory and has no default value.*
         ann_value : list
             List of values to be added item by item to all annotations.
         ann_unit : list
-            List of measurement units to be added item by by item to all
+            List of measurement units to be added item by item to all
             annotations. The method does not add separation space between
             the value and the unit.
+        ann_action : list
+            List of action prefixes prepend item by item to all annotations.
+            The method separates action and annotation with a space.
 
         Returns
         -------
@@ -341,10 +353,10 @@ class Decoder(srd.Decoder):
           list is not used, even if it is defined.
 
         """
-        if not isinstance(ann_list, list):
-            tmp = ann_list
-            ann_list = []
-            ann_list.append(tmp)
+        if not isinstance(ann_label, list):
+            tmp = ann_label
+            ann_label = []
+            ann_label.append(tmp)
 
         if ann_value is None:
             ann_value = []
@@ -360,22 +372,33 @@ class Decoder(srd.Decoder):
             ann_unit = []
             ann_unit.append(tmp)
 
-        # Add value and unit to all annotation, if declared
+        if ann_action is None:
+            ann_action = []
+        elif not isinstance(ann_action, list):
+            tmp = ann_action
+            ann_action = []
+            ann_action.append(tmp)
+        if len(ann_action) == 0:
+            ann_action = [""]
+
+        # Compose annotation
         annots = []
-        for ann in ann_list:
-            ann_item = None
-            for val in ann_value:
-                ann_item = "{}: {}".format(ann, val)
-                annots.append(ann_item)  # Without units
-                for unit in ann_unit:
-                    ann_item += "{}".format(unit)
-                    annots.append(ann_item)
-            if ann_item is None:
-                annots.append(ann)
+        for act in ann_action:
+            for lbl in ann_label:
+                ann = "{} {}".format(act, lbl).strip()
+                ann_item = None
+                for val in ann_value:
+                    ann_item = "{}: {}".format(ann, val)
+                    annots.append(ann_item)  # Without units
+                    for unit in ann_unit:
+                        ann_item += "{}".format(unit)
+                        annots.append(ann_item)  # With units
+                if ann_item is None:
+                    annots.append(ann)
 
         # Add last 2 annotation items without values
         if len(ann_value) > 0:
-            for ann in ann_list[-2:]:
+            for ann in ann_label[-2:]:
                 annots.append(ann)
         annots.sort(key=len, reverse=True)
         return annots
@@ -581,10 +604,13 @@ class Decoder(srd.Decoder):
         self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.DATA, annots])
         # Info row
         if regword == Params.POWERUP:
-            ann_idx = prm_annots[regword]
+            val_idx = prm_annots[regword]
         else:
-            ann_idx = prm_annots[Params.CUSTOM]
-        annots = self.compose_annot(strings[AnnStrings.CONF], strings[ann_idx])
+            val_idx = prm_annots[Params.CUSTOM]
+        act_idx = AnnStrings.WRITE if (self.write) else AnnStrings.READ
+        annots = self.compose_annot(strings[AnnStrings.CONF],
+                                    ann_value=strings[val_idx],
+                                    ann_action=strings[act_idx])
         self.put(self.ssb, self.es, self.out_ann, [AnnStrings.CONF, annots])
 
     def handle_datareg_0x00(self):
@@ -603,7 +629,6 @@ class Decoder(srd.Decoder):
             self.put_bit_reserve(i + TempBits.RESERVED)
         # Bits row - data bits
         data_bits = 8 * len(self.bytes) - 1 - res_bits
-        print(res_bits, data_bits)
         for i in range(0, data_bits):
             self.put_bit_data(i + TempBits.RESERVED + res_bits)
         # Registers row
@@ -611,7 +636,12 @@ class Decoder(srd.Decoder):
                                     "{:#06x}".format(regword))
         self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.TEMP, annots])
         # Info row
-        annots = self.compose_annot(strings[AnnStrings.TEMP], temp, unit)
+        # act_idx = AnnStrings.WRITE if (self.write) else AnnStrings.READ
+        annots = self.compose_annot(strings[AnnStrings.TEMP],
+                                    ann_value=temp,
+                                    ann_unit=unit,
+                                    # ann_action=strings[act_idx],
+                                    )
         self.put(self.ssb, self.es, self.out_ann, [AnnStrings.TEMP, annots])
 
     def handle_datareg_0x02(self):
@@ -623,7 +653,11 @@ class Decoder(srd.Decoder):
                                     "{:#06x}".format(regword))
         self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.TLOW, annots])
         # Info row
-        annots = self.compose_annot(strings[AnnStrings.TLOW], temp, unit)
+        act_idx = AnnStrings.WRITE if (self.write) else AnnStrings.READ
+        annots = self.compose_annot(strings[AnnStrings.TLOW],
+                                    ann_value=temp,
+                                    ann_unit=unit,
+                                    ann_action=strings[act_idx])
         self.put(self.ssb, self.es, self.out_ann, [AnnStrings.TLOW, annots])
 
     def handle_datareg_0x03(self):
@@ -635,7 +669,11 @@ class Decoder(srd.Decoder):
                                     "{:#06x}".format(regword))
         self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.THIGH, annots])
         # Info row
-        annots = self.compose_annot(strings[AnnStrings.THIGH], temp, unit)
+        act_idx = AnnStrings.WRITE if (self.write) else AnnStrings.READ
+        annots = self.compose_annot(strings[AnnStrings.THIGH],
+                                    ann_value=temp,
+                                    ann_unit=unit,
+                                    ann_action=strings[act_idx])
         self.put(self.ssb, self.es, self.out_ann, [AnnStrings.THIGH, annots])
 
     def decode(self, startsample, endsample, data):
@@ -680,8 +718,10 @@ class Decoder(srd.Decoder):
                     self.collect_data(databyte)
                     self.handle_addr()
                     if cmd == "ADDRESS READ":
+                        self.write = False
                         self.state = "REGISTER DATA"
                     elif cmd == "ADDRESS WRITE":
+                        self.write = True
                         self.state = "REGISTER ADDRESS"
                 else:
                     self.state = "IDLE"
