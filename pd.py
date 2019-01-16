@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """This file is part of the libsigrokdecode project.
 
-Copyright (C) 2018 Libor Gabaj <libor.gabaj@gmail.com>
+Copyright (C) 2018-2019 Libor Gabaj <libor.gabaj@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -22,7 +22,7 @@ import sigrokdecode as srd
 
 
 ###############################################################################
-# Enumeration classes
+# Enumeration classes for device parameters
 ###############################################################################
 class GeneralCall:
     """Enumeration of parameters for general call on I2C bus."""
@@ -85,6 +85,9 @@ class Params:
     (CUSTOM, POWERUP) = (0, 0x60a0)
 
 
+###############################################################################
+# Enumeration classes for annotations
+###############################################################################
 class AnnAddrs:
     """Enumeration of annotations for addresses."""
 
@@ -95,7 +98,7 @@ class AnnRegs:
     """Enumeration of annotations for registers."""
 
     (
-        RESET, DATA, CONF, TEMP, TLOW, THIGH
+        RESET, DATA, CONF, TEMP, TLOW, THIGH,
     ) = range(AnnAddrs.SCL + 1, (AnnAddrs.SCL + 1) + 6)
 
 
@@ -104,12 +107,12 @@ class AnnBits:
 
     (
         RESERVED, DATA,
-        EM, AL, CR0, SD, TM, POL, F0, R0, OS
+        EM, AL, CR0, SD, TM, POL, F0, R0, OS,
     ) = range(AnnRegs.THIGH + 1, (AnnRegs.THIGH + 1) + 11)
 
 
-class AnnStrings:
-    """Enumeration of annotations for formatted strings."""
+class AnnInfo:
+    """Enumeration of annotations for formatted info."""
 
     (
         WARN, GRST, CHECK, WRITE, READ, CUSTOM, PWRUP,
@@ -140,8 +143,8 @@ reg_annots = {  # Convert device register value to annotation index
 }
 
 prm_annots = {  # Convert device parameter value to annotation index
-    Params.CUSTOM: AnnStrings.CUSTOM,
-    Params.POWERUP: AnnStrings.PWRUP,
+    Params.CUSTOM: AnnInfo.CUSTOM,
+    Params.POWERUP: AnnInfo.PWRUP,
 }
 
 rates = {
@@ -149,6 +152,12 @@ rates = {
     0b01: "1",
     0b10: "4",
     0b11: "8",
+}
+
+radixes = {  # Convert radix option to format mask
+    "Hex": "{:#02x}",
+    "Dec": "{:#d}",
+    "Oct": "{:#o}",
 }
 
 faults = {
@@ -210,20 +219,42 @@ bits = {
     AnnBits.OS: ["One-shot conversion", "Oneshot", "OS", "O"],
 }
 
-strings = {
-    AnnStrings.WARN: ["Warnings", "Warn", "W"],
-    AnnStrings.GRST: ["General reset", "GenReset", "GRST", "Rst", "R"],
-    AnnStrings.WRITE: ["Write", "Wr", "W"],
-    AnnStrings.READ: ["Read", "Rd", "R"],
-    AnnStrings.CHECK: ["Slave presence check", "Slave check", "Check",
-                       "Chk", "C"],
-    AnnStrings.CUSTOM: ["Custom", "Cst", "C"],
-    AnnStrings.PWRUP: ["Power-up reset", "PwrReset", "Pwr", "P"],
-    AnnStrings.CONF: ["Configuration", "Conf", "Cfg", "C"],
-    AnnStrings.TEMP: ["Measured temperature", "Temperature", "Temp", "T"],
-    AnnStrings.TLOW: ["Low temperature limit", "Low limit", "Low", "L"],
-    AnnStrings.THIGH: ["High temperature limit", "High limit", "High", "H"],
+info = {
+    AnnInfo.WARN: ["Warnings", "Warn", "W"],
+    AnnInfo.GRST: ["General reset", "GenReset", "GRST", "Rst", "R"],
+    AnnInfo.CHECK: ["Slave presence check", "Slave check", "Check",
+                    "Chk", "C"],
+    AnnInfo.WRITE: ["Write", "Wr", "W"],
+    AnnInfo.READ: ["Read", "Rd", "R"],
+    AnnInfo.CUSTOM: ["Custom", "Cst", "C"],
+    AnnInfo.PWRUP: ["Power-up reset", "PwrReset", "Pwr", "P"],
+    AnnInfo.CONF: ["Configuration", "Conf", "Cfg", "C"],
+    AnnInfo.TEMP: ["Measured temperature", "Temperature", "Temp", "T"],
+    AnnInfo.TLOW: ["Low temperature limit", "Low limit", "Low", "L"],
+    AnnInfo.THIGH: ["High temperature limit", "High limit", "High", "H"],
 }
+
+
+def create_annots():
+    """Create a tuple with all annotation definitions."""
+    annots = []
+    # Addresses
+    for attr, value in vars(AnnAddrs).items():
+        if not attr.startswith('__'):
+            annots.append(tuple(["addr-" + attr.lower(), addresses[value][0]]))
+    # Registers
+    for attr, value in vars(AnnRegs).items():
+        if not attr.startswith('__'):
+            annots.append(tuple(["reg-" + attr.lower(), registers[value][0]]))
+    # Bits
+    for attr, value in vars(AnnBits).items():
+        if not attr.startswith('__'):
+            annots.append(tuple(["bit-" + attr.lower(), bits[value][0]]))
+    # Info
+    for attr, value in vars(AnnInfo).items():
+        if not attr.startswith('__'):
+            annots.append(tuple(["info-" + attr.lower(), info[value][0]]))
+    return tuple(annots)
 
 
 ###############################################################################
@@ -242,56 +273,18 @@ class Decoder(srd.Decoder):
     outputs = ["tmp102"]
 
     options = (
-        {"id": "units", "desc": "Temperature units", "default": "Celsius",
+        {"id": "radix", "desc": "Number format", "default": "Hex",
+         "values": ("Hex", "Dec", "Oct")},
+        {"id": "units", "desc": "Temperature unit", "default": "Celsius",
          "values": ("Celsius", "Fahrenheit", "Kelvin")},
     )
 
-    annotations = (
-        # Addresses
-        ("addr-gc", addresses[AnnAddrs.GC][0]),
-        ("addr-gnd", addresses[AnnAddrs.GND][0]),
-        ("addr-vcc", addresses[AnnAddrs.VCC][0]),
-        ("addr-sda", addresses[AnnAddrs.SDA][0]),
-        ("addr-scl", addresses[AnnAddrs.SCL][0]),
-        # Registers
-        ("reg-reset", registers[AnnRegs.RESET][0]),
-        ("reg-data", registers[AnnRegs.DATA][0]),
-        ("reg-conf", registers[AnnRegs.CONF][0]),
-        ("reg-temp", registers[AnnRegs.TEMP][0]),
-        ("reg-tlow", registers[AnnRegs.TLOW][0]),
-        ("reg-thigh", registers[AnnRegs.THIGH][0]),
-        # Common bits
-        ("bit-reserved", bits[AnnBits.RESERVED][0]),
-        ("bit-data", bits[AnnBits.DATA][0]),
-        # Configuration bits
-        ("bit-em", bits[AnnBits.EM][0]),
-        ("bit-al", bits[AnnBits.AL][0]),
-        ("bit-rate", bits[AnnBits.CR0][0]),
-        ("bit-sd", bits[AnnBits.SD][0]),
-        ("bit-tm", bits[AnnBits.TM][0]),
-        ("bit-pol", bits[AnnBits.POL][0]),
-        ("bit-fault", bits[AnnBits.F0][0]),
-        ("bit-res", bits[AnnBits.R0][0]),
-        ("bit-os", bits[AnnBits.OS][0]),
-        # Strings
-        ("warnings", strings[AnnStrings.WARN][0]),
-        ("gen-reset", strings[AnnStrings.GRST][0]),
-        ("write", strings[AnnStrings.WRITE][0]),
-        ("read", strings[AnnStrings.READ][0]),
-        ("check", strings[AnnStrings.CHECK][0]),
-        ("custom", strings[AnnStrings.CUSTOM][0]),
-        ("power-up", strings[AnnStrings.PWRUP][0]),
-        ("conf", strings[AnnStrings.CONF][0]),
-        ("temp", strings[AnnStrings.TEMP][0]),
-        ("tlow", strings[AnnStrings.TLOW][0]),
-        ("thigh", strings[AnnStrings.THIGH][0]),
-    )
-
+    annotations = create_annots()
     annotation_rows = (
         ("bits", "Bits", tuple(range(AnnBits.RESERVED, AnnBits.OS + 1))),
         ("regs", "Registers", tuple(range(AnnAddrs.GC, AnnRegs.THIGH + 1))),
-        ("info", "Info", tuple(range(AnnStrings.GRST, AnnStrings.THIGH + 1))),
-        ("warnings", "Warnings", (AnnStrings.WARN,)),
+        ("info", "Info", tuple(range(AnnInfo.GRST, AnnInfo.THIGH + 1))),
+        ("warnings", "Warnings", (AnnInfo.WARN,)),
     )
 
     def __init__(self):
@@ -442,7 +435,7 @@ class Decoder(srd.Decoder):
         ) or not check_gencall or addr_slave == GeneralCall.ADDRESS:
             return True
         self.put(self.ssb, self.es, self.out_ann,
-                 [AnnStrings.WARN,
+                 [AnnInfo.WARN,
                   ["Unknown slave address ({:#04x})"
                    .format(addr_slave)]])
         return False
@@ -499,6 +492,10 @@ class Decoder(srd.Decoder):
         self.bytes = []
         self.bits = []
 
+    def format_data(self, data):
+        """Format data value according to the radix option."""
+        return radixes[self.options["radix"]].format(data)
+
     def handle_addr(self):
         """Process slave address."""
         if len(self.bytes) == 0:
@@ -511,7 +508,7 @@ class Decoder(srd.Decoder):
         self.clear_data()
 
     def handle_reg(self):
-        """Create name and call corresponding slave register handler."""
+        """Process slave register."""
         if len(self.bytes) == 0:
             return
         self.reg = self.bytes[0]
@@ -527,8 +524,8 @@ class Decoder(srd.Decoder):
     def handle_nodata(self):
         """Process transmission without any data."""
         # Info row
-        annots = self.compose_annot(strings[AnnStrings.CHECK])
-        self.put(self.ssb, self.es, self.out_ann, [AnnStrings.CHECK, annots])
+        annots = self.compose_annot(info[AnnInfo.CHECK])
+        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.CHECK, annots])
 
     def handle_data(self):
         """Create name and call corresponding data register handler."""
@@ -539,8 +536,8 @@ class Decoder(srd.Decoder):
     def handle_datareg_0x06(self):
         """Process general reset register."""
         # Info row
-        annots = self.compose_annot(strings[AnnStrings.GRST])
-        self.put(self.ssb, self.es, self.out_ann, [AnnStrings.GRST, annots])
+        annots = self.compose_annot(info[AnnInfo.GRST])
+        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.GRST, annots])
 
     def handle_datareg_0x01(self):
         """Process configuration register."""
@@ -600,18 +597,18 @@ class Decoder(srd.Decoder):
             self.put_bit_reserve(i)
         # Registers row
         annots = self.compose_annot(registers[AnnRegs.DATA],
-                                    "{:#06x}".format(regword))
+                                    self.format_data(regword))
         self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.DATA, annots])
         # Info row
         if regword == Params.POWERUP:
             val_idx = prm_annots[regword]
         else:
             val_idx = prm_annots[Params.CUSTOM]
-        act_idx = AnnStrings.WRITE if (self.write) else AnnStrings.READ
-        annots = self.compose_annot(strings[AnnStrings.CONF],
-                                    ann_value=strings[val_idx],
-                                    ann_action=strings[act_idx])
-        self.put(self.ssb, self.es, self.out_ann, [AnnStrings.CONF, annots])
+        act_idx = AnnInfo.WRITE if (self.write) else AnnInfo.READ
+        annots = self.compose_annot(info[AnnInfo.CONF],
+                                    ann_value=info[val_idx],
+                                    ann_action=info[act_idx])
+        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.CONF, annots])
 
     def handle_datareg_0x00(self):
         """Process temperature register."""
@@ -633,16 +630,16 @@ class Decoder(srd.Decoder):
             self.put_bit_data(i + TempBits.RESERVED + res_bits)
         # Registers row
         annots = self.compose_annot(registers[AnnRegs.DATA],
-                                    "{:#06x}".format(regword))
+                                    self.format_data(regword))
         self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.TEMP, annots])
         # Info row
-        # act_idx = AnnStrings.WRITE if (self.write) else AnnStrings.READ
-        annots = self.compose_annot(strings[AnnStrings.TEMP],
+        # act_idx = AnnInfo.WRITE if (self.write) else AnnInfo.READ
+        annots = self.compose_annot(info[AnnInfo.TEMP],
                                     ann_value=temp,
                                     ann_unit=unit,
-                                    # ann_action=strings[act_idx],
+                                    # ann_action=info[act_idx],
                                     )
-        self.put(self.ssb, self.es, self.out_ann, [AnnStrings.TEMP, annots])
+        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.TEMP, annots])
 
     def handle_datareg_0x02(self):
         """Process TLOW register."""
@@ -650,15 +647,15 @@ class Decoder(srd.Decoder):
         temp, unit = self.calculate_temperature(regword)
         # Registers row
         annots = self.compose_annot(registers[AnnRegs.DATA],
-                                    "{:#06x}".format(regword))
+                                    self.format_data(regword))
         self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.TLOW, annots])
         # Info row
-        act_idx = AnnStrings.WRITE if (self.write) else AnnStrings.READ
-        annots = self.compose_annot(strings[AnnStrings.TLOW],
+        act_idx = AnnInfo.WRITE if (self.write) else AnnInfo.READ
+        annots = self.compose_annot(info[AnnInfo.TLOW],
                                     ann_value=temp,
                                     ann_unit=unit,
-                                    ann_action=strings[act_idx])
-        self.put(self.ssb, self.es, self.out_ann, [AnnStrings.TLOW, annots])
+                                    ann_action=info[act_idx])
+        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.TLOW, annots])
 
     def handle_datareg_0x03(self):
         """Process THIGH register."""
@@ -666,15 +663,15 @@ class Decoder(srd.Decoder):
         temp, unit = self.calculate_temperature(regword)
         # Registers row
         annots = self.compose_annot(registers[AnnRegs.DATA],
-                                    "{:#06x}".format(regword))
+                                    self.format_data(regword))
         self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.THIGH, annots])
         # Info row
-        act_idx = AnnStrings.WRITE if (self.write) else AnnStrings.READ
-        annots = self.compose_annot(strings[AnnStrings.THIGH],
+        act_idx = AnnInfo.WRITE if (self.write) else AnnInfo.READ
+        annots = self.compose_annot(info[AnnInfo.THIGH],
                                     ann_value=temp,
                                     ann_unit=unit,
-                                    ann_action=strings[act_idx])
-        self.put(self.ssb, self.es, self.out_ann, [AnnStrings.THIGH, annots])
+                                    ann_action=info[act_idx])
+        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.THIGH, annots])
 
     def decode(self, startsample, endsample, data):
         """Decode samples provided by parent decoder."""
@@ -714,7 +711,7 @@ class Decoder(srd.Decoder):
               should be always followed by the write bit.
             """
             if cmd in ["ADDRESS WRITE", "ADDRESS READ"]:
-                if self.check_addr(databyte, True):
+                if self.check_addr(databyte, check_gencall=True):
                     self.collect_data(databyte)
                     self.handle_addr()
                     if cmd == "ADDRESS READ":
@@ -744,11 +741,10 @@ class Decoder(srd.Decoder):
             - Subsequent writes signals writing to the slave.
             - Otherwise Stop condition is expected.
             """
-            if cmd == "START REPEAT":
-                self.state = "ADDRESS SLAVE"
-                return
-            elif cmd in ["DATA WRITE", "DATA READ"]:
+            if cmd in ["DATA WRITE", "DATA READ"]:
                 self.collect_data(databyte)
+            elif cmd == "START REPEAT":
+                self.state = "ADDRESS SLAVE"
             elif cmd == "STOP":
                 """Output formatted string with register data.
                 - This is end of an I2C transmission. Start waiting for another
