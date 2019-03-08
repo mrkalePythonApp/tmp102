@@ -170,12 +170,6 @@ temp_units = {  # Convert temperature scale option to measurement unit
 ###############################################################################
 # Parameters anotations definitions
 ###############################################################################
-"""
-- If a parameter has a value, the last item of an annotation list is used
-  repeatedly without a value.
-- If a parameter has measurement unit alongside with value, the last two items
-  are used repeatedly without that measurement unit.
-"""
 addresses = {
     AnnAddrs.GC: ["General call", "GEN_CALL", "GC", "G"],
     AnnAddrs.GND: ["ADD0 grounded", "ADD0_GND", "AG"],
@@ -574,10 +568,10 @@ class Decoder(srd.Decoder):
                                    ann_action=act)
         self.put(self.ssb, self.es, self.out_ann, [ann, annots])
 
-    def decode(self, startsample, endsample, data):
+    def decode(self, ss, es, data):
         """Decode samples provided by parent decoder."""
         cmd, databyte = data
-        self.ss, self.es = startsample, endsample
+        self.ss, self.es = ss, es
 
         if cmd == "BITS":
             """Collect packet of bits that belongs to the following command.
@@ -596,7 +590,7 @@ class Decoder(srd.Decoder):
 
         # State machine
         if self.state == "IDLE":
-            """Waiting for an I2C transmission."""
+            """Wait for an I2C transmission."""
             if cmd != "START":
                 return
             self.ssb = self.ss
@@ -623,17 +617,15 @@ class Decoder(srd.Decoder):
                 self.collect_data(databyte)
                 self.handle_reg()
                 self.state = "REGISTER DATA"
-            elif cmd == "STOP":
+            elif cmd in ["STOP", "START REPEAT"]:
                 """Output end of transmission without any register and data."""
                 self.handle_nodata()
                 self.state = "IDLE"
 
         elif self.state == "REGISTER DATA":
-            """Process writing or reading data for a slave register.
-            - Repeated Start condition signals, that reading sequence follows
-              starting with slave address.
-            - Subsequent writes signals writing to the slave.
-            - Otherwise Stop condition is expected.
+            """Process data of a slave register.
+            - Individual command or data can end either with repeated start
+              condition or with stop condition.
             """
             if cmd in ["DATA WRITE", "DATA READ"]:
                 self.collect_data(databyte)
