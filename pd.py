@@ -19,6 +19,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 """
 
 import sigrokdecode as srd
+import common.srdhelper as hlp
 
 
 ###############################################################################
@@ -43,7 +44,7 @@ class Address:
 class Register:
     """Enumeration of possible slave register addresses."""
 
-    (TEMP, CONF, TLOW, THIGH) = range(0, 4)
+    (TEMP, CONF, TLOW, THIGH) = range(4)
 
 
 class ConfigBits:
@@ -67,12 +68,6 @@ class ConfigBits:
     ) = range(4, 16)
 
 
-class CommonBits:
-    """Enumeration of common bits."""
-
-    (RESERVED,) = (0xff,)
-
-
 class TempBits:
     """Enumeration of specific temperature register bits."""
 
@@ -91,15 +86,15 @@ class Params:
 class AnnAddrs:
     """Enumeration of annotations for addresses."""
 
-    (GC, GND, VCC, SDA, SCL) = range(0, 5)
+    (GC, GND, VCC, SDA, SCL) = range(5)
 
 
 class AnnRegs:
     """Enumeration of annotations for registers."""
 
     (
-        RESET, DATA, CONF, TEMP, TLOW, THIGH,
-    ) = range(AnnAddrs.SCL + 1, (AnnAddrs.SCL + 1) + 6)
+        RESET, CONF, TEMP, TLOW, THIGH,
+    ) = range(AnnAddrs.SCL + 1, (AnnAddrs.SCL + 1) + 5)
 
 
 class AnnBits:
@@ -115,9 +110,9 @@ class AnnInfo:
     """Enumeration of annotations for formatted info."""
 
     (
-        WARN, BADADD, GRST, CHECK, WRITE, READ, CUSTOM, PWRUP,
+        WARN, BADADD, GRST, CHECK, WRITE, READ, SELECT, CUSTOM, PWRUP,
         CONF, TEMP, TLOW, THIGH,
-    ) = range(AnnBits.OS + 1, (AnnBits.OS + 1) + 12)
+    ) = range(AnnBits.OS + 1, (AnnBits.OS + 1) + 13)
 
 
 ###############################################################################
@@ -152,12 +147,6 @@ rates = {
     0b01: "1",
     0b10: "4",
     0b11: "8",
-}
-
-radixes = {  # Convert radix option to format mask
-    "Hex": "{:#02x}",
-    "Dec": "{:#d}",
-    "Oct": "{:#o}",
 }
 
 faults = {
@@ -197,7 +186,6 @@ addresses = {
 
 registers = {
     AnnRegs.RESET: ["Reset register", "Reset", "Rst", "R"],
-    AnnRegs.DATA: ["Register content", "Content", "Data", "D"],
     AnnRegs.CONF: ["Configuration register", "Configuration", "Conf",
                    "Cfg", "C"],
     AnnRegs.TEMP: ["Temperature register", "Temperature", "Temp", "T"],
@@ -206,14 +194,14 @@ registers = {
 }
 
 bits = {
-    AnnBits.RESERVED: ["Reserved bit", "Reserved", "Rsvd", "R"],
-    AnnBits.DATA: ["Data bit", "Data", "D"],
+    AnnBits.RESERVED: ["Reserved", "Rsvd", "R"],
+    AnnBits.DATA: ["Data", "D"],
     AnnBits.EM: ["Extended mode", "EM", "E"],
     AnnBits.AL: ["Alert", "AL", "A"],
-    AnnBits.CR0: ["Conversion rate bits", "Conversion rate", "Rate", "R"],
+    AnnBits.CR0: ["Conversion rate", "Rate", "R"],
     AnnBits.SD: ["Shutdown mode", "Shutdown", "Shtd", "SD", "S"],
     AnnBits.TM: ["Thermostat mode", "Thermostat", "TMode", "TM", "T"],
-    AnnBits.POL: ["Alert active", "Polarity", "Pol", "P"],
+    AnnBits.POL: ["Polarity", "Pol", "P"],
     AnnBits.F0: ["Consecutive faults", "Faults", "Flts", "F"],
     AnnBits.R0: ["Converter resolution", "Resolution", "Res", "R"],
     AnnBits.OS: ["One-shot conversion", "Oneshot", "OS", "O"],
@@ -228,6 +216,7 @@ info = {
                     "Chk", "C"],
     AnnInfo.WRITE: ["Write", "Wr", "W"],
     AnnInfo.READ: ["Read", "Rd", "R"],
+    AnnInfo.SELECT: ["Select", "Sel", "S"],
     AnnInfo.CUSTOM: ["Custom", "Cst", "C"],
     AnnInfo.PWRUP: ["Power-up reset", "PwrReset", "Pwr", "P"],
     AnnInfo.CONF: ["Configuration", "Conf", "Cfg", "C"],
@@ -235,28 +224,6 @@ info = {
     AnnInfo.TLOW: ["Low temperature limit", "Low limit", "Low", "L"],
     AnnInfo.THIGH: ["High temperature limit", "High limit", "High", "H"],
 }
-
-
-def create_annots():
-    """Create a tuple with all annotation definitions."""
-    annots = []
-    # Addresses
-    for attr, value in vars(AnnAddrs).items():
-        if not attr.startswith('__') and value in addresses:
-            annots.append(tuple(["addr-" + attr.lower(), addresses[value][0]]))
-    # Registers
-    for attr, value in vars(AnnRegs).items():
-        if not attr.startswith('__') and value in registers:
-            annots.append(tuple(["reg-" + attr.lower(), registers[value][0]]))
-    # Bits
-    for attr, value in vars(AnnBits).items():
-        if not attr.startswith('__') and value in bits:
-            annots.append(tuple(["bit-" + attr.lower(), bits[value][0]]))
-    # Info
-    for attr, value in vars(AnnInfo).items():
-        if not attr.startswith('__') and value in info:
-            annots.append(tuple(["info-" + attr.lower(), info[value][0]]))
-    return tuple(annots)
 
 
 ###############################################################################
@@ -268,25 +235,32 @@ class Decoder(srd.Decoder):
     api_version = 3
     id = "tmp102"
     name = "TMP102"
-    longname = "Digial temperature sensor TMP102"
-    desc = "Low power digital temperature sensor protocol decoder, v 1.0.0."
+    longname = "Digital temperature sensor TMP102"
+    desc = "Low power digital temperature sensor."
     license = "gplv2+"
     inputs = ["i2c"]
     outputs = ["tmp102"]
 
     options = (
         {"id": "radix", "desc": "Number format", "default": "Hex",
-         "values": ("Hex", "Dec", "Oct")},
+         "values": ("Hex", "Dec", "Oct", "Bin")},
         {"id": "units", "desc": "Temperature unit", "default": "Celsius",
          "values": ("Celsius", "Fahrenheit", "Kelvin")},
     )
 
-    annotations = create_annots()
+    annotations = hlp.create_annots(
+        {
+            "addr": addresses,
+            "reg": registers,
+            "bit": bits,
+            "info": info,
+        }
+    )
     annotation_rows = (
         ("bits", "Bits", tuple(range(AnnBits.RESERVED, AnnBits.OS + 1))),
         ("regs", "Registers", tuple(range(AnnAddrs.GC, AnnRegs.THIGH + 1))),
         ("info", "Info", tuple(range(AnnInfo.GRST, AnnInfo.THIGH + 1))),
-        ("warnings", "Warnings", (AnnInfo.WARN,)),
+        ("warnings", "Warnings", (AnnInfo.WARN, AnnInfo.BADADD)),
     )
 
     def __init__(self):
@@ -299,133 +273,53 @@ class Decoder(srd.Decoder):
         self.ss = 0         # Start sample
         self.es = 0         # End sample
         self.ssb = 0        # Start sample of an annotation transmission block
-        self.ssd = 0        # Start sample of an annotation data block
-        self.esd = 0        # End sample of an annotation data block
-        self.bits = []      # List of recent processed byte bits
-        self.bytes = []     # List of recent processed bytes
         self.write = True   # Flag about recent write action (default write)
         self.state = "IDLE"
         # Specific parameters for a device
         self.addr = Address.GND     # Slave address (default ADD0 grounded)
         self.reg = Register.TEMP    # Processed slave register (default temp)
         self.em = False             # Flag about extended mode (default Normal)
+        self.clear_data()
+
+    def clear_data(self):
+        """Clear data cache."""
+        self.ssd = 0        # Start sample of an annotation data block
+        self.bytes = []     # List of recent processed bytes
+        self.bits = []      # List of recent processed byte bits
 
     def start(self):
         """Actions before the beginning of the decoding."""
         self.out_ann = self.register(srd.OUTPUT_ANN)
 
-    def compose_annot(self, ann_label, ann_value=None, ann_unit=None,
-                      ann_action=None):
-        """Compose list of annotations enriched with value and unit.
+    def putd(self, ss, es, data):
+        """Span data output across bit range.
+
+        - Output is an annotation block from the start sample of the first
+          bit to the end sample of the last bit.
+        """
+        self.put(self.bits[ss][1], self.bits[es][2], self.out_ann, data)
+
+    def putb(self, start, end=None, ann=AnnBits.RESERVED):
+        """Span special bit annotation across bit range bit by bit.
 
         Arguments
         ---------
-        ann_label : list
-            List of annotation label for enriching with values and units and
-            prefixed with actions.
-            *The argument is mandatory and has no default value.*
-        ann_value : list
-            List of values to be added item by item to all annotations.
-        ann_unit : list
-            List of measurement units to be added item by item to all
-            annotations. The method does not add separation space between
-            the value and the unit.
-        ann_action : list
-            List of action prefixes prepend item by item to all annotations.
-            The method separates action and annotation with a space.
-
-        Returns
-        -------
-        list of str
-            List of a annotations potentially enriched with values and units
-            with items sorted by length descending.
-
-        Notes
-        -----
-        - Usually just one value and one unit is used. However for flexibility
-          more of them can be used.
-        - If the annotation values list is not defined, the annotation units
-          list is not used, even if it is defined.
+        start : integer
+            Number of the first annotated bit counting from 0.
+        end : integer
+            Number of the bit right after the last annotated bit
+            counting from 0. If none value is provided, the method uses
+            start value increased by 1, so that just the first bit will be
+            annotated.
+        ann : integer
+            Index of the special bit's annotation in the annotations list
+            `bits`. Default value is for reserved bit.
 
         """
-        if not isinstance(ann_label, list):
-            tmp = ann_label
-            ann_label = []
-            ann_label.append(tmp)
-
-        if ann_value is None:
-            ann_value = []
-        elif not isinstance(ann_value, list):
-            tmp = ann_value
-            ann_value = []
-            ann_value.append(tmp)
-
-        if ann_unit is None:
-            ann_unit = []
-        elif not isinstance(ann_unit, list):
-            tmp = ann_unit
-            ann_unit = []
-            ann_unit.append(tmp)
-
-        if ann_action is None:
-            ann_action = []
-        elif not isinstance(ann_action, list):
-            tmp = ann_action
-            ann_action = []
-            ann_action.append(tmp)
-        if len(ann_action) == 0:
-            ann_action = [""]
-
-        # Compose annotation
-        annots = []
-        for act in ann_action:
-            for lbl in ann_label:
-                ann = "{} {}".format(act, lbl).strip()
-                ann_item = None
-                for val in ann_value:
-                    ann_item = "{}: {}".format(ann, val)
-                    annots.append(ann_item)  # Without units
-                    for unit in ann_unit:
-                        ann_item += "{}".format(unit)
-                        annots.append(ann_item)  # With units
-                if ann_item is None:
-                    annots.append(ann)
-
-        # Add last 2 annotation items without values
-        if len(ann_value) > 0:
-            for ann in ann_label[-2:]:
-                annots.append(ann)
-        annots.sort(key=len, reverse=True)
-        return annots
-
-    def put_data(self, bit_start, bit_stop, data):
-        """Span data output across bit range.
-
-        - Output is an annotation block from the start sample of the first bit
-          to the end sample of the last bit.
-        """
-        self.put(self.bits[bit_start][1], self.bits[bit_stop][2],
-                 self.out_ann, data)
-
-    def put_bit_data(self, bit_reserved):
-        """Span output under general data bit.
-
-        - Output is an annotation block from the start to the end sample
-          of a data bit.
-        """
-        annots = self.compose_annot(bits[AnnBits.DATA])
-        self.put(self.bits[bit_reserved][1], self.bits[bit_reserved][2],
-                 self.out_ann, [AnnBits.DATA, annots])
-
-    def put_bit_reserve(self, bit_reserved):
-        """Span output under reserved bit.
-
-        - Output is an annotation block from the start to the end sample
-          of a reserved bit.
-        """
-        annots = self.compose_annot(bits[AnnBits.RESERVED])
-        self.put(self.bits[bit_reserved][1], self.bits[bit_reserved][2],
-                 self.out_ann, [AnnBits.RESERVED, annots])
+        annots = hlp.compose_annot(bits[ann])
+        for bit in range(start, end or (start + 1)):
+            self.put(self.bits[bit][1], self.bits[bit][2],
+                     self.out_ann, [ann, annots])
 
     def check_addr(self, addr_slave, check_gencall=False):
         """Check correct slave address or general call."""
@@ -436,9 +330,10 @@ class Decoder(srd.Decoder):
             Address.SCL,
         ) or not check_gencall or addr_slave == GeneralCall.ADDRESS:
             return True
-        annots = self.compose_annot(AnnInfo.BADADD,
-                                    ann_value=self.format_data(self.addr))
-        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.BADADD, annots])
+        ann = AnnInfo.BADADD
+        val = hlp.format_data(self.addr, self.options["radix"])
+        annots = hlp.compose_annot(info[ann], ann_value=val)
+        self.put(self.ss, self.es, self.out_ann, [ann, annots])
         return False
 
     def calculate_temperature(self, rawdata):
@@ -480,58 +375,49 @@ class Decoder(srd.Decoder):
 
     def collect_data(self, databyte):
         """Collect data byte to a data cache."""
-        self.esd = self.es
-        if len(self.bytes) == 0:
+        if self.bytes:
+            self.bytes.insert(0, databyte)
+        else:
             self.ssd = self.ss
             self.bytes.append(databyte)
-        else:
-            self.bytes.insert(0, databyte)
 
-    def clear_data(self):
-        """Clear data cache."""
-        self.ssd = self.esd = 0
-        self.bytes = []
-        self.bits = []
-
-    def format_data(self, data):
-        """Format data value according to the radix option."""
-        return radixes[self.options["radix"]].format(data)
-
-    def format_action(self):
-        """Format r/w action ."""
-        act_idx = AnnInfo.WRITE if (self.write) else AnnInfo.READ
-        return info[act_idx]
+    def format_rw(self):
+        """Format read/write action."""
+        act = (AnnInfo.READ, AnnInfo.WRITE)[self.write]
+        return info[act]
 
     def handle_addr(self):
         """Process slave address."""
-        if len(self.bytes) == 0:
+        if not self.bytes:
             return
         # Registers row
         self.addr = self.bytes[0]
-        ann_idx = addr_annots[self.addr]
-        annots = self.compose_annot(addresses[ann_idx])
-        self.put(self.ssd, self.esd, self.out_ann, [ann_idx, annots])
+        ann = addr_annots[self.addr]
+        annots = hlp.compose_annot(addresses[ann])
+        self.put(self.ss, self.es, self.out_ann, [ann, annots])
         self.clear_data()
 
     def handle_reg(self):
         """Process slave register."""
-        if len(self.bytes) == 0:
+        if not self.bytes:
             return
         self.reg = self.bytes[0]
         if self.addr == GeneralCall.ADDRESS:
-            ann_idx = reg_annots_gc[self.reg]
+            ann = reg_annots_gc[self.reg]
+            act = None
         else:
-            ann_idx = reg_annots[self.reg]
-        # Registers row
-        annots = self.compose_annot(registers[ann_idx])
-        self.put(self.ssd, self.esd, self.out_ann, [ann_idx, annots])
+            ann = reg_annots[self.reg]
+            act = info[AnnInfo.SELECT]
+        annots = hlp.compose_annot(registers[ann], ann_action=act)
+        self.put(self.ss, self.es, self.out_ann, [ann, annots])
         self.clear_data()
 
     def handle_nodata(self):
         """Process transmission without any data."""
         # Info row
-        annots = self.compose_annot(info[AnnInfo.CHECK])
-        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.CHECK, annots])
+        ann = AnnInfo.CHECK
+        annots = hlp.compose_annot(info[ann])
+        self.put(self.ssb, self.es, self.out_ann, [ann, annots])
 
     def handle_data(self):
         """Create name and call corresponding data register handler."""
@@ -542,146 +428,151 @@ class Decoder(srd.Decoder):
     def handle_datareg_0x06(self):
         """Process general reset register."""
         # Info row
-        annots = self.compose_annot(info[AnnInfo.GRST])
-        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.GRST, annots])
+        ann = AnnInfo.GRST
+        annots = hlp.compose_annot(info[ann])
+        self.put(self.ssb, self.es, self.out_ann, [ann, annots])
 
     def handle_datareg_0x01(self):
         """Process configuration register."""
         regword = (self.bytes[1] << 8) + self.bytes[0]
         # Bits row - OS bit - one-shot measurement
-        os = 1 if (regword & (1 << ConfigBits.OS)) else 0
-        os_l = ("en" if (os) else "dis") + "abled"
+        os = regword >> ConfigBits.OS & 1
+        os_l = ("dis", "en")[os] + "abled"
         os_s = os_l[0].upper()
-        annots = self.compose_annot(bits[AnnBits.OS], [os, os_l, os_s])
-        self.put_data(ConfigBits.OS, ConfigBits.OS, [AnnBits.OS, annots])
+        ann = AnnBits.OS
+        annots = hlp.compose_annot(bits[ann], [os, os_l, os_s])
+        self.putd(ConfigBits.OS, ConfigBits.OS, [ann, annots])
         # Bits row - R0/R1 bits - converter resolution
-        res = resolutions[(regword >> ConfigBits.R0) & 0b11]
-        annots = self.compose_annot(bits[AnnBits.R0],
-                                    "{}".format(res), "bit")
-        self.put_data(ConfigBits.R1, ConfigBits.R0, [AnnBits.R0, annots])
+        res = resolutions[regword >> ConfigBits.R0 & 0b11]
+        ann = AnnBits.R0
+        val = "{}".format(res)
+        annots = hlp.compose_annot(bits[ann], ann_value=val, ann_unit="bit")
+        self.putd(ConfigBits.R1, ConfigBits.R0, [ann, annots])
         # Bits row - F0/F1 bits - fault queue
-        flt = faults[(regword >> ConfigBits.F0) & 0b11]
-        annots = self.compose_annot(bits[AnnBits.F0],
-                                    ann_value="{}".format(flt))
-        self.put_data(ConfigBits.F1, ConfigBits.F0, [AnnBits.F0, annots])
+        flt = faults[regword >> ConfigBits.F0 & 0b11]
+        ann = AnnBits.F0
+        val = "{}".format(flt)
+        annots = hlp.compose_annot(bits[ann], ann_value=val)
+        self.putd(ConfigBits.F1, ConfigBits.F0, [ann, annots])
         # Bits row - POL bit - polarity, alert active
-        pol = 1 if (regword & (1 << ConfigBits.POL)) else 0
-        pol_l = ("high" if (pol) else "low")
+        pol = regword >> ConfigBits.POL & 1
+        pol_l = ("low", "high")[pol]
         pol_s = pol_l[0].upper()
-        annots = self.compose_annot(bits[AnnBits.POL],
-                                    ann_value=[pol, pol_l, pol_s])
-        self.put_data(ConfigBits.POL, ConfigBits.POL, [AnnBits.POL, annots])
+        ann = AnnBits.POL
+        annots = hlp.compose_annot(bits[ann], ann_value=[pol, pol_l, pol_s])
+        self.putd(ConfigBits.POL, ConfigBits.POL, [ann, annots])
         # Bits row - TM bit - thermostat mode
-        tm = 1 if (regword & (1 << ConfigBits.TM)) else 0
-        tm_l = ("interrupt" if (tm) else "comparator")
+        tm = regword >> ConfigBits.TM & 1
+        tm_l = ("comparator", "interrupt")[tm]
         tm_s = tm_l[0].upper()
-        annots = self.compose_annot(bits[AnnBits.TM],
-                                    ann_value=[tm, tm_l, tm_s])
-        self.put_data(ConfigBits.TM, ConfigBits.TM, [AnnBits.TM, annots])
+        ann = AnnBits.TM
+        annots = hlp.compose_annot(bits[ann], ann_value=[tm, tm_l, tm_s])
+        self.putd(ConfigBits.TM, ConfigBits.TM, [ann, annots])
         # Bits row - SD bit - shutdown mode
-        sd = 1 if (regword & (1 << ConfigBits.SD)) else 0
-        sd_l = ("en" if (sd) else "dis") + "abled"
+        sd = regword >> ConfigBits.SD & 1
+        sd_l = ("dis", "en")[sd] + "abled"
         sd_s = sd_l[0].upper()
-        annots = self.compose_annot(bits[AnnBits.SD],
-                                    ann_value=[sd, sd_l, sd_s])
-        self.put_data(ConfigBits.SD, ConfigBits.SD, [AnnBits.SD, annots])
+        ann = AnnBits.SD
+        annots = hlp.compose_annot(bits[ann], ann_value=[sd, sd_l, sd_s])
+        self.putd(ConfigBits.SD, ConfigBits.SD, [ann, annots])
         # Bits row - CR0/CR1 bits - conversion rate
-        rate = rates[(regword >> ConfigBits.CR0) & 0b11]
-        annots = self.compose_annot(bits[AnnBits.CR0],
-                                    ann_value=rate,
-                                    ann_unit="Hz")
-        self.put_data(ConfigBits.CR1, ConfigBits.CR0, [AnnBits.CR0, annots])
+        rate = rates[regword >> ConfigBits.CR0 & 0b11]
+        ann = AnnBits.CR0
+        annots = hlp.compose_annot(bits[ann], ann_value=rate, ann_unit="Hz")
+        self.putd(ConfigBits.CR1, ConfigBits.CR0, [ann, annots])
         # Bits row - AL bit - alert
-        al = 1 if (regword & (1 << ConfigBits.AL)) else 0
-        al_l = ("in" if (al ^ pol) else "") + "active"
+        al = regword >> ConfigBits.AL & 1
+        al_l = ("", "in")[al ^ pol] + "active"
         al_s = al_l[0].upper()
-        annots = self.compose_annot(bits[AnnBits.AL],
-                                    ann_value=[al, al_l, al_s])
-        self.put_data(ConfigBits.AL, ConfigBits.AL, [AnnBits.AL, annots])
+        ann = AnnBits.AL
+        annots = hlp.compose_annot(bits[ann], ann_value=[al, al_l, al_s])
+        self.putd(ConfigBits.AL, ConfigBits.AL, [ann, annots])
         # Bits row - EM bit - extended mode
-        em = 1 if (regword & (1 << ConfigBits.EM)) else 0
+        em = regword >> ConfigBits.EM & 1
         self.em = bool(em)
-        em_l = ("en" if (em) else "dis") + "abled"
+        em_l = ("dis", "en")[em] + "abled"
         em_s = em_l[0].upper()
-        annots = self.compose_annot(bits[AnnBits.EM],
-                                    ann_value=[em, em_l, em_s])
-        self.put_data(ConfigBits.EM, ConfigBits.EM, [AnnBits.EM, annots])
+        ann = AnnBits.EM
+        annots = hlp.compose_annot(bits[ann], ann_value=[em, em_l, em_s])
+        self.putd(ConfigBits.EM, ConfigBits.EM, [ann, annots])
         # Bits row - reserved bits
         for i in range(ConfigBits.EM - 1, -1, -1):
-            self.put_bit_reserve(i)
+            self.putb(i)
         # Registers row
-        annots = self.compose_annot(registers[AnnRegs.DATA],
-                                    ann_value=self.format_data(regword))
-        self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.DATA, annots])
+        ann = AnnRegs.CONF
+        val = hlp.format_data(regword, self.options["radix"])
+        annots = hlp.compose_annot(registers[ann], ann_value=val)
+        self.put(self.ssd, self.es, self.out_ann, [ann, annots])
         # Info row
-        if regword == Params.POWERUP:
-            val_idx = prm_annots[regword]
-        else:
-            val_idx = prm_annots[Params.CUSTOM]
-        annots = self.compose_annot(info[AnnInfo.CONF],
-                                    ann_value=info[val_idx],
-                                    ann_action=self.format_action())
-        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.CONF, annots])
+        ann = AnnInfo.CONF
+        val = info[prm_annots[
+                (Params.CUSTOM, regword)[regword == Params.POWERUP]]]
+        act = self.format_rw()
+        annots = hlp.compose_annot(info[ann], ann_value=val, ann_action=act)
+        self.put(self.ssb, self.es, self.out_ann, [ann, annots])
 
     def handle_datareg_0x00(self):
         """Process temperature register."""
         regword = (self.bytes[1] << 8) + self.bytes[0]
         temp, unit = self.calculate_temperature(regword)
         # Bits row - EM bit - extended mode
-        em = 1 if (self.em) else 0
-        em_l = ("en" if (self.em) else "dis") + "abled"
+        em = int(self.em)
+        em_l = ("dis", "en")[self.em] + "abled"
         em_s = em_l[0].upper()
-        annots = self.compose_annot(bits[AnnBits.EM], [em, em_l, em_s])
-        self.put_data(TempBits.EM, TempBits.EM, [AnnBits.EM, annots])
+        ann = AnnBits.EM
+        annots = hlp.compose_annot(bits[ann], [em, em_l, em_s])
+        self.putd(TempBits.EM, TempBits.EM, [ann, annots])
         # Bits row - reserved bits
-        res_bits = 2 if (self.em) else 3
-        for i in range(0, res_bits):
-            self.put_bit_reserve(i + TempBits.RESERVED)
+        res_bits = (3, 2)[self.em]
+        bit_min = TempBits.RESERVED
+        bit_max = bit_min + res_bits
+        self.putb(bit_min, bit_max)
         # Bits row - data bits
         data_bits = 8 * len(self.bytes) - 1 - res_bits
-        for i in range(0, data_bits):
-            self.put_bit_data(i + TempBits.RESERVED + res_bits)
+        bit_min = bit_max
+        bit_max = bit_min + data_bits
+        self.putb(bit_min, bit_max, AnnBits.DATA)
         # Registers row
-        annots = self.compose_annot(registers[AnnRegs.DATA],
-                                    ann_value=self.format_data(regword))
-        self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.TEMP, annots])
+        ann = AnnRegs.TEMP
+        val = hlp.format_data(regword, self.options["radix"])
+        annots = hlp.compose_annot(registers[ann], ann_value=val)
+        self.put(self.ssd, self.es, self.out_ann, [ann, annots])
         # Info row
-        annots = self.compose_annot(info[AnnInfo.TEMP],
-                                    ann_value=temp,
-                                    ann_unit=unit,
-                                    # ann_action=self.format_action(),
-                                    )
-        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.TEMP, annots])
+        ann = AnnInfo.TEMP
+        annots = hlp.compose_annot(info[ann], ann_value=temp, ann_unit=unit)
+        self.put(self.ssb, self.es, self.out_ann, [ann, annots])
 
     def handle_datareg_0x02(self):
         """Process TLOW register."""
         regword = (self.bytes[1] << 8) + self.bytes[0]
         temp, unit = self.calculate_temperature(regword)
         # Registers row
-        annots = self.compose_annot(registers[AnnRegs.DATA],
-                                    ann_value=self.format_data(regword))
-        self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.TLOW, annots])
+        ann = AnnRegs.TLOW
+        val = hlp.format_data(regword, self.options["radix"])
+        annots = hlp.compose_annot(registers[ann], ann_value=val)
+        self.put(self.ssd, self.es, self.out_ann, [ann, annots])
         # Info row
-        annots = self.compose_annot(info[AnnInfo.TLOW],
-                                    ann_value=temp,
-                                    ann_unit=unit,
-                                    ann_action=self.format_action())
-        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.TLOW, annots])
+        ann = AnnInfo.TLOW
+        act = self.format_rw()
+        annots = hlp.compose_annot(info[ann], ann_value=temp, ann_unit=unit,
+                                   ann_action=act)
+        self.put(self.ssb, self.es, self.out_ann, [ann, annots])
 
     def handle_datareg_0x03(self):
         """Process THIGH register."""
         regword = (self.bytes[1] << 8) + self.bytes[0]
         temp, unit = self.calculate_temperature(regword)
         # Registers row
-        annots = self.compose_annot(registers[AnnRegs.DATA],
-                                    self.format_data(regword))
-        self.put(self.ssd, self.esd, self.out_ann, [AnnRegs.THIGH, annots])
+        ann = AnnRegs.THIGH
+        val = hlp.format_data(regword, self.options["radix"])
+        annots = hlp.compose_annot(registers[ann], ann_value=val)
+        self.put(self.ssd, self.es, self.out_ann, [ann, annots])
         # Info row
-        annots = self.compose_annot(info[AnnInfo.THIGH],
-                                    ann_value=temp,
-                                    ann_unit=unit,
-                                    ann_action=self.format_action())
-        self.put(self.ssb, self.es, self.out_ann, [AnnInfo.THIGH, annots])
+        ann = AnnInfo.THIGH
+        act = self.format_rw()
+        annots = hlp.compose_annot(info[ann], ann_value=temp, ann_unit=unit,
+                                   ann_action=act)
+        self.put(self.ssb, self.es, self.out_ann, [ann, annots])
 
     def decode(self, startsample, endsample, data):
         """Decode samples provided by parent decoder."""
